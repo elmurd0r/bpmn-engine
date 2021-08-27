@@ -62,7 +62,7 @@
     "nyc": "^15.1.0"
   },
   "dependencies": {
-    "bpmn-elements": "^5.1.2",
+    "bpmn-elements": "github:elmurd0r/bpmn-elements",
     "bpmn-moddle": "^7.0.4",
     "buffer": "^6.0.3",
     "debug": "^4.3.1",
