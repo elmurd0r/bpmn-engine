@@ -1,6 +1,6 @@
 'use strict';
 
-const BpmnModdle = require('bpmn-moddle');
+const BpmnModdle = require('bpmn-moddle').default;
 const DebugLogger = require('./lib/Logger');
 const elements = require('bpmn-elements');
 const getOptionsAndCallback = require('./lib/getOptionsAndCallback');
@@ -10,6 +10,7 @@ const {Broker} = require('smqp');
 const {default: serializer, deserialize, TypeResolver} = require('moddle-context-serializer');
 const {EventEmitter} = require('events');
 const {version: engineVersion} = require('./package.json');
+let Buffer = require('buffer/').Buffer;
 
 module.exports = {Engine};
 
