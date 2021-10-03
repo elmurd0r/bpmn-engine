@@ -67,6 +67,6 @@
     "buffer": "^6.0.3",
     "debug": "^4.3.1",
     "moddle-context-serializer": "^1.1.1",
-    "smqp": "^5.0.0"
+    "smqp": "^5.1.0"
   }
 }
