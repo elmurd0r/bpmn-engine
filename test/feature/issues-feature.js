@@ -1054,6 +1054,228 @@ Feature('Issues', () => {
       expect(execution.environment.timers.executing).to.have.length(0);
     });
   });
+
+  Feature('issue 144 - strip id from broadcasted signal', () => {
+    const source = `<?xml version="1.0" encoding="UTF-8"?>
+    <definitions id="Definitions_0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+      targetNamespace="http://bpmn.io/schema/bpmn">
+      <process id="first_process" isExecutable="true">
+        <startEvent id="start" />
+        <sequenceFlow id="to-task" sourceRef="start" targetRef="task" />
+        <userTask id="task" />
+        <sequenceFlow id="to-loop" sourceRef="task" targetRef="loop" />
+        <userTask id="loop">
+          <multiInstanceLoopCharacteristics isSequential="false">
+            <loopCardinality>3</loopCardinality>
+          </multiInstanceLoopCharacteristics>
+        </userTask>
+      </process>
+    </definitions>`;
+
+    let engine;
+    Given('process with user task and a tripple looped user task', async () => {
+      const listener = new EventEmitter();
+      engine = Engine({
+        name: 'Engine',
+        source,
+        listener,
+        extensions: {
+          stripSignalId(activity, context) {
+            if (activity.type === 'bpmn:Process') return;
+
+            const formatQ = activity.broker.getQueue('format-run-q');
+            activity.on('activity.execution.completed', ({content}) => {
+              const rawOutput = content.output;
+              if (!rawOutput) return;
+
+              let output;
+              if (content.isMultiInstance) {
+                output = rawOutput.map(({id, executionId, ...rest}) => { // eslint-disable-line no-unused-vars
+                  return rest;
+                });
+              } else {
+                const {id, executionId, ...rest} = rawOutput; // eslint-disable-line no-unused-vars
+                output = rest;
+              }
+
+              formatQ.queueMessage({routingKey: 'run.output.format'}, {output});
+            });
+
+            activity.on('activity.end', (elementApi) => {
+              if (!elementApi.content.output) return;
+              context.environment.output[elementApi.id] = elementApi.content.output;
+            });
+          }
+        }
+      });
+    });
+
+    let execution;
+    When('executed', async () => {
+      execution = await engine.execute();
+    });
+
+    Then('execution is waiting for user task', () => {
+      expect(execution.getPostponed()[0]).to.have.property('id', 'task');
+    });
+
+    When('execution is signaled with user task id', () => {
+      execution.signal({id: 'task', myvar: 1});
+    });
+
+    let looped;
+    Then('execution is waiting for looped user task', () => {
+      const postponed = execution.getPostponed();
+      expect(postponed[0]).to.have.property('id', 'loop');
+      looped = postponed[0].getExecuting();
+      expect(looped).to.have.length(3);
+    });
+
+    let end;
+    When('execution is signaled with looped iterations execution id', () => {
+      end = execution.waitFor('end');
+      execution.signal({executionId: looped.pop().content.executionId, myvar: 1});
+      execution.signal({executionId: looped.pop().content.executionId, myvar: 1});
+      execution.signal({executionId: looped.pop().content.executionId, myvar: 1});
+    });
+
+    let result;
+    Then('execution completes', async () => {
+      result = await end;
+    });
+
+    And('id and execution id was stripped from output', () => {
+      expect(result.environment.output).to.deep.equal({
+        task: {myvar: 1},
+        loop: [{myvar: 1}, {myvar: 1}, {myvar: 1}],
+      });
+    });
+  });
+
+  Feature('issue 145 - throw error inside task', () => {
+    const source = `<?xml version="1.0" encoding="UTF-8"?>
+    <definitions id="Definitions_0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+      targetNamespace="http://bpmn.io/schema/bpmn">
+      <process id="Process_0" isExecutable="true">
+        <startEvent id="start" />
+        <sequenceFlow id="to-task-a" sourceRef="start" targetRef="task-a" />
+        <manualTask id="task-a" />
+        <boundaryEvent id="bound-err" attachedToRef="task-a">
+          <errorEventDefinition id="error-event" errorRef="Error_1"/>
+        </boundaryEvent>
+        <sequenceFlow id="to-task-b" sourceRef="bound-err" targetRef="task-b" />
+        <task id="task-b" />
+        <sequenceFlow id="to-end-b" sourceRef="task-b" targetRef="end-b" />
+        <sequenceFlow id="to-end-a" sourceRef="task-a" targetRef="end-a" />
+        <endEvent id="end-b" />
+        <endEvent id="end-a" />
+      </process>
+      <error id="Error_1" name="Error" />
+    </definitions>`;
+
+    let engine, listener;
+    Given('process with task with bound named error', async () => {
+      listener = new EventEmitter();
+      engine = Engine({
+        name: 'Engine',
+        source,
+        listener,
+      });
+    });
+
+    And('listener for task that will throw error under certain conditions', () => {
+      listener.on('activity.wait', (elementApi, execution) => {
+        if (elementApi.id !== 'task-a') return;
+        const {errorId} = execution.definitions[0].environment.variables;
+        if (errorId) {
+          return elementApi.owner.emitFatal({id: errorId}, {id: elementApi.id});
+        }
+        return elementApi.signal();
+      });
+    });
+
+    let execution, end;
+    When('executed with condition to continue', async () => {
+      end = engine.waitFor('end');
+      execution = await engine.execute();
+    });
+
+    Then('execution completed', () => {
+      return end;
+    });
+
+    And('task was taken', () => {
+      const task = execution.getActivityById('task-a');
+      expect(task.counters).to.contain({
+        taken: 1,
+        discarded: 0,
+      });
+    });
+
+    And('bound error was discarded', () => {
+      const errorEvent = execution.getActivityById('bound-err');
+      expect(errorEvent.counters).to.contain({
+        taken: 0,
+        discarded: 1,
+      });
+    });
+
+    When('executed with condition to throw specific error', async () => {
+      end = engine.waitFor('end');
+      execution = await engine.execute({
+        variables: {
+          errorId: 'Error_1'
+        }
+      });
+    });
+
+    Then('execution completed', () => {
+      return end;
+    });
+
+    And('task was discarded', () => {
+      const task = execution.getActivityById('task-a');
+      expect(task.counters).to.contain({
+        taken: 0,
+        discarded: 1,
+      });
+    });
+
+    And('thrown error was caught', () => {
+      const errorEvent = execution.getActivityById('bound-err');
+      expect(errorEvent.counters).to.contain({
+        taken: 1,
+        discarded: 0,
+      });
+    });
+
+    When('executed with condition to throw', async () => {
+      end = engine.waitFor('end');
+      execution = await engine.execute({variables: {errorId: 'Error_1'}});
+    });
+
+    Then('execution completed', () => {
+      return end;
+    });
+
+    And('task was discarded', () => {
+      const task = execution.getActivityById('task-a');
+      expect(task.counters).to.contain({
+        taken: 0,
+        discarded: 1,
+      });
+    });
+
+    And('thrown error was caught', () => {
+      const errorEvent = execution.getActivityById('bound-err');
+      expect(errorEvent.counters).to.contain({
+        taken: 1,
+        discarded: 0,
+      });
+    });
+  });
 });
 
 function TimersWithoutScope(options) {
@@ -1109,6 +1331,6 @@ function TimersWithoutScope(options) {
       executing.splice(idx, 1);
       return options.clearTimeout.call(null, ref.timerRef);
     }
-    return options.clearTimeout(ref);
+    return options.clearTimeout.call(null, ref);
   }
 }

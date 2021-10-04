@@ -1,6 +1,14 @@
 Changelog
 =========
 
+# 13.0.0
+
+- Slimmer state from [`bpmn-elements@6`](https://github.com/paed01/bpmn-elements/blob/master/CHANGELOG.md). In most cases it should be safe to update, unless you inspect the broker states for some reason
+
+# 12.0.5
+
+- Prettify and actualize ts types
+
 # 12.0.4
 
 Update package.json to reflect what was stated in v12.0.3.
